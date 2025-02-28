@@ -1,7 +1,7 @@
-import { db } from "./lib/database";
-import { type User, type News, type Gateway, type InsertUser, type InsertNews, type InsertGateway } from "@shared/schema";
+import { users, news, gateways, type User, type News, type Gateway, type InsertUser, type InsertNews, type InsertGateway } from "@shared/schema";
 
 export interface IStorage {
+  // Existing methods
   validateAccessKey(key: string): Promise<User | undefined>;
   getUser(id: number): Promise<User | undefined>;
   updateUserCredits(id: number, credits: number): Promise<void>;
@@ -11,75 +11,153 @@ export interface IStorage {
   addNews(news: InsertNews): Promise<News>;
   getGateways(): Promise<Gateway[]>;
   getGateway(id: number): Promise<Gateway | undefined>;
+
+  // New methods for bot operations
   createUser(user: Partial<InsertUser>): Promise<User>;
   revokeAccessKey(key: string): Promise<boolean>;
   addGateway(gateway: InsertGateway): Promise<Gateway>;
   toggleGateway(id: number): Promise<boolean>;
 }
 
-export class SQLiteStorage implements IStorage {
+export class MemStorage implements IStorage {
+  private users: Map<number, User>;
+  private news: Map<number, News>;
+  private gateways: Map<number, Gateway>;
+  private currentId: Record<string, number>;
+
+  constructor() {
+    this.users = new Map();
+    this.news = new Map();
+    this.gateways = new Map();
+    this.currentId = { users: 1, news: 1, gateways: 1 };
+
+    // Add demo data
+    this.users.set(1, {
+      id: 1,
+      accessKey: "demo123",
+      credits: 1000,
+      language: "en",
+      proxyHost: null,
+      proxyPort: null,
+      proxyUser: null,
+      proxyPass: null
+    });
+
+    this.gateways.set(1, {
+      id: 1,
+      name: "Stripe Charge",
+      endpoint: "/api/gateways/stripe",
+      active: true
+    });
+
+    this.gateways.set(2, {
+      id: 2, 
+      name: "PayPal Direct",
+      endpoint: "/api/gateways/paypal",
+      active: true
+    });
+
+    this.news.set(1, {
+      id: 1,
+      title: "Welcome!",
+      content: "Welcome to Nezuko Card Checker",
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  // Existing methods
   async validateAccessKey(key: string): Promise<User | undefined> {
-    return db.prepare("SELECT * FROM users WHERE accessKey = ?").get(key) as User;
+    return Array.from(this.users.values()).find(u => u.accessKey === key);
   }
 
   async getUser(id: number): Promise<User | undefined> {
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as User;
+    return this.users.get(id);
   }
 
   async updateUserCredits(id: number, credits: number): Promise<void> {
-    db.prepare("UPDATE users SET credits = ? WHERE id = ?").run(credits, id);
+    const user = this.users.get(id);
+    if (user) {
+      this.users.set(id, { ...user, credits });
+    }
   }
 
   async updateUserProxy(id: number, proxy: Partial<User>): Promise<void> {
-    db.prepare("UPDATE users SET proxyHost = ?, proxyPort = ?, proxyUser = ?, proxyPass = ? WHERE id = ?").run(
-      proxy.proxyHost, proxy.proxyPort, proxy.proxyUser, proxy.proxyPass, id
-    );
+    const user = this.users.get(id);
+    if (user) {
+      this.users.set(id, { ...user, ...proxy });
+    }
   }
 
   async updateUserLanguage(id: number, language: string): Promise<void> {
-    db.prepare("UPDATE users SET language = ? WHERE id = ?").run(language, id);
+    const user = this.users.get(id);
+    if (user) {
+      this.users.set(id, { ...user, language });
+    }
   }
 
   async getNews(): Promise<News[]> {
-    return db.prepare("SELECT * FROM news ORDER BY createdAt DESC").all() as News[];
+    // Sort news by creation date in descending order (newest first)
+    return Array.from(this.news.values()).sort((a, b) => {
+      const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return dateB - dateA; // Descending order
+    });
   }
 
   async addNews(news: InsertNews): Promise<News> {
-    const stmt = db.prepare("INSERT INTO news (title, content) VALUES (?, ?) RETURNING *");
-    return stmt.get(news.title, news.content) as News;
+    const id = this.currentId.news++;
+    const newNews = { ...news, id };
+    this.news.set(id, newNews);
+    return newNews;
   }
 
   async getGateways(): Promise<Gateway[]> {
-    return db.prepare("SELECT * FROM gateways").all() as Gateway[];
+    return Array.from(this.gateways.values());
   }
 
   async getGateway(id: number): Promise<Gateway | undefined> {
-    return db.prepare("SELECT * FROM gateways WHERE id = ?").get(id) as Gateway;
+    return this.gateways.get(id);
   }
 
+  // New methods for bot operations
   async createUser(user: Partial<InsertUser>): Promise<User> {
-    const stmt = db.prepare("INSERT INTO users (accessKey, credits, language) VALUES (?, ?, ?) RETURNING *");
-    return stmt.get(user.accessKey, user.credits || 0, user.language || "en") as User;
+    const id = this.currentId.users++;
+    const newUser: User = {
+      id,
+      accessKey: user.accessKey!,
+      credits: user.credits || 0,
+      language: user.language || "en",
+      proxyHost: null,
+      proxyPort: null,
+      proxyUser: null,
+      proxyPass: null
+    };
+    this.users.set(id, newUser);
+    return newUser;
   }
 
   async revokeAccessKey(key: string): Promise<boolean> {
-    const result = db.prepare("DELETE FROM users WHERE accessKey = ?").run(key);
-    return result.changes > 0;
+    const user = await this.validateAccessKey(key);
+    if (!user) return false;
+    this.users.delete(user.id);
+    return true;
   }
 
   async addGateway(gateway: InsertGateway): Promise<Gateway> {
-    const stmt = db.prepare("INSERT INTO gateways (name, endpoint, active) VALUES (?, ?, ?) RETURNING *");
-    return stmt.get(gateway.name, gateway.endpoint, gateway.active ?? true) as Gateway;
+    const id = this.currentId.gateways++;
+    const newGateway: Gateway = { ...gateway, id };
+    this.gateways.set(id, newGateway);
+    return newGateway;
   }
 
   async toggleGateway(id: number): Promise<boolean> {
-    const gateway = this.getGateway(id);
+    const gateway = await this.getGateway(id);
     if (!gateway) return false;
 
-    const newStatus = !(gateway.active);
-    db.prepare("UPDATE gateways SET active = ? WHERE id = ?").run(newStatus, id);
+    const updatedGateway = { ...gateway, active: !gateway.active };
+    this.gateways.set(id, updatedGateway);
     return true;
   }
 }
 
-export const storage = new SQLiteStorage();
+export const storage = new MemStorage();
